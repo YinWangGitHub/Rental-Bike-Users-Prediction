@@ -1,0 +1,278 @@
+---
+title: "Bike Share Regression" 
+Yin Wang, Cooper Clark, Karen Tabet, Kieran Furse, Sai Nathani
+geometry: "left=0.3cm,right=0.3cm,top=0.3cm,bottom=0.3cm"
+output:
+  pdf_document: default 
+  html_document: default
+  fig_width: 4
+  fig_height: 4
+date: '2023-01-18'
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, fig.width = 6.5, fig.height = 5)
+library(car)
+library(psych)
+library(ggplot2)
+library(olsrr)
+library(DMwR2)
+library(purrr)
+library(reticulate)
+library(caret)
+library(corrgram)
+```
+
+### 1. Data Exploration
+#####     1.1 Summary Statistics:
+We analyzed and summarized the data to gain a deeper understanding of it and identify the variables that have an impact on rental behaviors.
+```{r}
+#load data in R
+bike= read.csv("/Users/yinwang/Desktop/folder/SMU/Spring_Mod_A/Applied Predictive Analysis/Week1/HW_1/HW1 bikeshare.csv")
+
+#summary(bike)
+#dim(bike) # inspect data dimension
+#str(bike)  #inspect data structure
+```
+* We conducted a correlation analysis, excluding the casual and registered variables. 
+* The moderately correlated variables (0.3 - 0.7) are the following: temp & season, atemp & season,cnt & temp, cnt & atemp, hum & weathersit, temp & casual, atemp & casual. 
+* The strongly correlated variables (>= 0.7) are mnth & season.
+* The variables correlated with cnt are season, yr, temp, atemp.     
+```{r}
+corPlot(bike[3:16])
+```
+
+### 2. Clean the Data
+* There are no missing values in the given data set.
+```{r}
+#sum(is.na(bike))
+```
+* There seems to be outliers in the two following variables: hum (Humidity), windspeed (Wind speed).These outliers are visually represented and can be seen below. 
+```{r}
+       ##Box plot for cnt outliers 
+       boxplot(bike$cnt,main='Total_count',sub=paste(boxplot.stats(bike$cnt)$out), col = "lightskyblue1")
+       ##Box plot for temp outliers
+       boxplot(bike$temp, main="Temp",sub=paste(boxplot.stats(bike$temp)$out),col= "lightskyblue1")
+       ##Box plot for atemp outliers
+       boxplot(bike$atemp, main="atemp",sub=paste(boxplot.stats(bike$temp)$out),col="lightskyblue1")
+       ##Box plot for humidity outliers
+       boxplot(bike$hum,main="Humidity",sub=paste(boxplot.stats(bike$hum)$out),col="lightskyblue1")
+      ##Box plot for windspeed outliers
+       boxplot(bike$windspeed,main="Windspeed",sub=paste(boxplot.stats(bike$windspeed)$out),col="lightskyblue1")
+```
+
+
+* Next, we removed the outliers in variables windspeed and humidity. 
+```{r}
+       ##create subset for windspeed and humidity variable
+       wind_hum<-subset(bike,select=c('windspeed','hum'))
+       ##column names of wind_hum
+       cnames<-colnames(wind_hum)
+       for(i in cnames){
+       val=wind_hum[,i][wind_hum[,i] %in% boxplot.stats(wind_hum[,i])$out] #outlier values
+       wind_hum[,i][wind_hum[,i] %in% val]= NA  # Replace outliers with NA 
+       }
+       ##Imputating the missing values using mean imputation method
+       #wind_hum$windspeed[is.na(wind_hum$windspeed)]<-mean(wind_hum$windspeed,na.rm=TRUE) 
+       #wind_hum$hum[is.na(wind_hum$humidity)]<-mean(wind_hum$hum,na.rm=TRUE)
+       ##replace original data with new data(without outliers)
+       #new_bike<-subset(bike,select=-c(windspeed,hum))
+       new_bike<-subset(bike,select=-c(windspeed,hum))
+       ##Combined new_df and wind_hum data frames
+       bike<-cbind(new_bike,wind_hum)
+       bike <- na.omit(bike)
+     
+```
+### 3. Graph Showing the Distribution of Dependent Variable (y)
+* Results show that Casual bike users follows a lognormal distribution, while both registered and total users follow a normal distribution. 
+* It is also shown that registered users account for the majority (81.2%) of total users. Therefore, we selected total user (cnt) as the dependent variable to build our predictive models, as we would like to predict the number of people that rent bikes regardless of whether they are registered or not. It is still important to keep registered users as the primary target segment when advertising and developing marketing campaigns. We recommend to develop incentive programs for registered users to stay engaged and encourage friends and family to try out a bike and get a discounted day pass. We also suggest improving referral reward programs to increase loyalty and retention among users. Another method to increase brand awareness in neighborhoods would be to partner with local and small businesses.
+```{r}
+##preparing dataframe, casting data type 
+    bike$dteday<- as.Date(bike$dteday)
+    bike$yr<-as.factor(bike$yr)
+    bike$mnth<-as.factor(bike$mnth)
+    bike$season <- as.factor(bike$season)
+    bike$holiday<- as.factor(bike$holiday)
+    bike$weekday<- as.factor(bike$weekday)
+    bike$workingday<- as.factor(bike$workingday)
+    bike$weathersit<- as.factor(bike$weathersit)
+
+   ##checking histograms of casual, registered, cnt
+   Casual <- bike$casual #histogram of casual
+   hist(Casual, density = bike$casual,col = "dodgerblue1", border= "white")
+   Registered <- bike$registered # histogram of registered
+   hist(Registered,density = bike$registered ,col = "dodgerblue3", border= "white")
+   Cnt <- bike$cnt # histogram of cnt
+   hist(Cnt, density= bike$cnt ,col = "dodgerblue4", border= "white")
+   ## pie chart of casual and registered users
+   #slices <- c(sum(bike$casual),sum(bike$registered))
+   #lab <- paste(c("Casual", "Registered"),"\n", piepercent, "%")
+   #piepercent<- round(100*slices/sum(slices), 1)
+   #pie(slices, labels= lab, main= "Pie Chart of User Types", col= c("mistyrose", "lightskyblue1"), border= 0.1)
+  
+```
+
+
+####     3.2 Scatterplot of Users by Humidity and Season
+* We realized that Season does not necessarily tell the humidity level. We also noticed that people tend to use bikes more when humidity is moderate or low. As a result, bike rentals decrease as the humidity increases. 
+```{r}
+   ggplot(data = bike, aes(hum,cnt)) + geom_point(alpha = 0.3, aes(color = season)) + theme_bw() +
+     geom_smooth(method="loess", se=T, color= "dodgerblue1") +
+   theme(plot.title = element_text(hjust = 0.1, lineheight = 0.8, face = "bold"))+
+     labs(title="User Count By Humidity and Season", 
+          y="User Count", 
+          x="Humidity")
+```
+
+####     3.3 Scatterplot of Users by Temperature and Season
+* We see that in the Summer and Fall seasons, when temperature is modestly warm, more people tend to rent bikes. However, bike rentals is not very common in Winter, when it is cold and the temperatures are low. This is a useful insight allowing the marketing department to cut down on budgets for Winter seasons, and increase budgets during warm weather seasons to attract the larger amount of people that are predicted to rent bikes. That being said, an alternative strategy is to offer discounts during slow periods to boost user activity. 
+```{r}
+ggplot(data = bike, aes(temp,cnt)) + geom_point(alpha = 0.3,aes(color =season )) + theme_bw() +
+     geom_smooth(method="loess", se=T, color= "dodgerblue1") +
+    theme(plot.title = element_text(hjust = 0.1, lineheight = 0.8, face = "bold"))+
+     labs(title="User Count By Temperature and Season", 
+          y="User Count", 
+          x="Temperature")
+```
+
+####     3.4 Plot of Users by Windspeed
+* In addition, when it is windy, less people are willing to rent bikes as their chosen means of transportation. This is also an actionable insight when deciding the number of bikes to be made available on days with high windspeed.  
+```{r}
+ggplot(data = bike, aes(windspeed,cnt)) + geom_point(alpha = 0.3, aes(color = windspeed)) + theme_gray() +
+     geom_smooth(method="loess", se=T,color= "dodgerblue1") +
+     labs(title="User Count By Windspeed", 
+          y="User Count", 
+          x="Windspeed")+
+     theme(plot.title = element_text(hjust = 0.1, lineheight = 0.8, face = "bold"))+
+   labs(x= "Windspeed", y= "User Count")
+```
+
+
+####    3.5 Bar Plot of Users by Month and Season
+* Looking at the bar plots, we see that bike rentals increase between the months of May and September. 
+* Summer is actually the season with the highest bike rentals, followed by fall and winter, with winter being the least preferred season to rent bikes.
+* This is also an actionable insights in terms of marketing campaigns and offers that could be launched for the Summer season and Back to School season in the Fall. We suggest hosting a series of events such as group rides, bike tours, and races during Summer to engage with the community. An example of a marketing campaign to start off the Summer could be Cycle Into The Summer, where the brand would organize cycling events on weekends, sponsored by fitness brands. 
+```{r}
+   ggplot(bike, aes(mnth, cnt)) + 
+     geom_bar(aes(fill = season), stat = 'identity') + 
+     ggtitle(label="User Count By Month") + scale_y_continuous(labels = scales::comma) +                  theme(plot.title = element_text(hjust = 0.1, lineheight = 0.8, face = "bold"))+
+     labs(x= "Month", y= "User Count")
+```
+```{r}
+  ggplot(bike, aes(season, cnt)) + 
+     geom_bar(aes(fill = season), stat = 'identity') + 
+     ggtitle(label="User Count By Season") + scale_y_continuous(labels = scales::comma) +                  theme(plot.title = element_text(hjust = 0.1, lineheight = 0.8, face = "bold"))+
+     labs(x= "Month", y= "User Count")
+```
+
+####     3.6 Scatter Plot of Users by Weekday and Holiday
+* Looking more closely at bike rentals per weekday and holiday, we see that Holidays are likely to fall on a Monday. Generally, holidays would not lead to an increase in bike rentals and users. (Holiday: 0= non-holiday, 1= holiday).
+
+```{r}
+ggplot(data = bike, aes(weekday,cnt)) + geom_point(alpha = 0.4,aes(color =holiday )) + theme_bw() +
+    theme(plot.title = element_text(hjust = 0.1, lineheight = 0.8, face = "bold"))+
+     labs(title="User Count By Weekday", 
+          y="User Count", 
+          x="Weekday")
+```
+
+
+### 4. Regression models
+```{r}
+## Model_1 - variables are not excluding atemp
+  model_1 = lm( data= bike, cnt ~ season+ mnth + holiday + weekday +workingday+ weathersit+ temp+ atemp + windspeed +   hum)
+   
+##Check correlation & Correlation Plot
+corPlot(bike[10:14], cex = 1.2)
+#### The temp and atemp variables are highly positively correlated with each other (= 0.99), meaning that both variables are essentially carrying the same information. 
+
+## Model_2 - ignores atemp variable for further analysis
+  model_2 = lm( data= bike, cnt ~ season+ mnth + holiday + weekday +workingday+ weathersit+ temp + windspeed +    hum)
+
+```
+
+```{r}
+## Model_3 - the data set is split into train (70%) and test(30%), variables are encoded, 
+   train_index<-sample(1:nrow(bike),0.7*nrow(bike))
+   train_data<-bike[train_index,]
+   test_data<-bike[-train_index,]
+   #dim(train_data)
+   #dim(test_data)
+   
+   ##Created a new subset for train variables
+   train<-subset(train_data,select=c('season','yr','mnth','holiday', 'weekday','workingday','weathersit','temp','hum','windspeed','cnt'))
+   ##Created a new subset for test variables
+   test<-subset(test_data,select=c('season','yr','mnth','holiday','weekday','workingday','weathersit','temp','hum','windspeed','cnt'))
+   
+   ##created a new subset for train categorical variables
+   train_cat_attributes<-subset(train,select=c('season','holiday','workingday','weathersit','yr'))
+   ##created a new subset for test categorical variables 
+   test_cat_attributes<-subset(test,select=c('season','holiday','workingday','weathersit','yr'))
+   ##created a new subset for train numerical variables
+   train_num_attributes<-subset(train,select=c('weekday','mnth','temp','hum','windspeed','cnt'))
+   ##created a new subset for test numerical variables
+   test_num_attributes<-subset(test,select=c('weekday','mnth','temp', 'hum','windspeed','cnt'))
+
+   ##Other variables along with target variable to get dummy variables
+   othervars<-c('mnth','weekday','temp','hum','windspeed','cnt')
+   set.seed(12)
+   ##Categorical variables
+   vars<-setdiff(colnames(train),c(train$cnt,othervars))
+   ##Formula pass through encoder to get dummy variables
+   f <- paste('~', paste(vars, collapse = ' + '))
+   ##Encoder is encoded the categorical variables to numeric
+   encoder<-dummyVars(as.formula(f), train)
+   ##Predicting the encode attributes
+   encode_attributes<-predict(encoder,train)
+   ##Binding the train_num_attributes and encode_attributes
+   train_encoded_attributes<-cbind(train_num_attributes,encode_attributes)
+
+
+   ##Categorical variables
+   vars<-setdiff(colnames(test),c(test$cnt,othervars))
+   ##Formula pass through encoder to get dummy variables
+   f<- paste('~',paste(vars,collapse='+'))
+   ##Encoder is encoded the categorical variables to numeric
+   encoder<-dummyVars(as.formula(f),test)
+   ##Predicting the encoder attributes
+   encode_attributes<-predict(encoder,test)
+   ##Binding the test_num_attributes and encode_attributes
+   test_encoded_attributes<-cbind(test_num_attributes,encode_attributes)
+  
+```
+
+```{r}
+#4.2 Train the encoded model
+   set.seed(12)
+   model_3<-lm(train_encoded_attributes$cnt~.,train_encoded_attributes[,-c(6)])
+```
+* The Adjusted R-squared of Model_1, Model_2, and Model_3 are  0.5738, 0.5743,  0.8204, respectively. The larger the Adjusted R-squared the more accurate the model; therefore, Model_3 is the best performing model in predicting total rental bikes.
+```{r}
+   #summary(model_1)
+   #summary(model_2)
+   #summary(model_3) 
+```
+### 5. Model Predictions
+* The Residual plot of Model_3 is a horizontal line, which is the best among the three models as its variance is constant.     
+```{r}
+   set.seed(12)
+   options(warn=-1)
+   lm_predict<-predict(model_3, test_encoded_attributes[,-c(6)])
+   #head(lm_predict, 5)
+   plot(model_1, which= 1)
+   plot(model_2, which= 1)
+   plot(model_3, which= 1)
+  
+   ##check independence with autocorrelation
+   #acf(model_3$residuals)
+   
+   #confirm autocorrelation by running Durbin-Wason test, D-W Statistic is 0.967 meaning there is a positive  autocorrelation
+   ## so errors tend to move in the same direction    
+   ## p-value is small, we reject the null hypothesis that  there is zero autocorrelation 
+   #durbinWatsonTest(model_3)
+   ##P-value is 0.43, fail to reject that the null hypothesis that  there is zero autocorrelation   
+   #detect observations that strongly influence fitted values of the model
+   # prepare data for Cooks' d bar plot
+   #k <- ols_prep_cdplot_data(model_3) 
+   # plot cooks' d bar plot
+   #ols_plot_cooksd_bar(model_3) 
+```
